@@ -1,0 +1,174 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+entity CH11C is
+port( CLK:in std_logic;
+	XA:out std_logic_vector(3 downto 0);
+	XB:out std_logic_vector(7 downto 0);
+	YC:in std_logic_vector(3 downto 0));
+end CH11C;
+
+architecture CH11C_ARCH of CH11C is
+	component DIGIT10
+	port( CLK:in std_logic;
+		DB:out std_logic_vector(3 downto 0);
+		ENB:in std_logic;
+		CLR:in std_logic;
+		EC:in std_logic;
+		CY:out std_logic);
+	end component;
+	component DIGIT6
+	port( CLK:in std_logic;
+		DB:out std_logic_vector(3 downto 0);
+		ENB:in std_logic;
+		CLR:in std_logic;
+		EC:in std_logic;
+		CY:out std_logic);
+	end component;
+
+	signal DB:std_logic_vector(3 downto 0);
+	signal SEG:std_logic_vector(6 downto 0);
+	signal ENB:std_logic_vector(3 downto 0);
+	signal HZ,SEC,CLR,HOLD: std_logic;
+	signal SAMPLE,MATCH:std_logic;
+	signal KEY,FLT,DIF:std_logic;
+	signal SEL:std_logic_vector(2 downto 0);
+begin
+
+SYSTEM_CONNECT: block
+	signal EC,EC1,EC2,EC3,EC4:std_logic;
+	signal CY0,CY1,CY2,CY3,CY4:std_logic;
+begin
+	U1:DIGIT10 port map (CLK,DB,ENB(0),CLR,EC1,CY1);
+	U2:DIGIT6 port map (CLK,DB,ENB(1),CLR,EC2,CY2);
+	U3:DIGIT10 port map (CLK,DB,ENB(2),CLR,EC3,CY3);
+	U4:DIGIT6 port map (CLK,DB,ENB(3),CLR,EC4,CY4);
+	CLR <= not YC(3);
+	EC <= HZ and not SEL(2) and not YC(0);
+	CY0 <= HZ and not HOLD;
+	EC1 <= (CY0 and SEL(2)) or (EC and not SEL(1) and not SEL(0));
+	EC2 <= (CY1 and SEL(2)) or (EC and not SEL(1) and  SEL(0));
+	EC3 <= (CY2 and SEL(2)) or (EC and  SEL(1) and not SEL(0));
+	EC4 <= (CY3 and SEL(2)) or (EC and  SEL(1) and  SEL(0));
+	KEY <= not YC(0) or not YC(1) or not YC(2) or not YC(3);
+	XA <= not ENB;
+	XB(7) <= SEC and ENB(2) and SEL(2) and not HOLD;
+GEN:for I in 0 to 6 generate
+	XB(I) <= SEG(I) and ( SEC or not MATCH or SEL(2));
+	end generate;
+end block SYSTEM_CONNECT;
+
+FREE_COUNTER : block
+	signal Q:std_logic_vector(21 downto 0);
+	signal D:std_logic_vector(1 downto 0);
+	signal DLY1,DLY2 : std_logic;
+begin
+	process(CLK)
+	begin
+		if CLK'EVENT and CLK = '1' then
+			DLY1 <= Q(21);
+			DLY2 <= Q(14);
+			Q <= Q+1;
+		end if;
+	end process;
+	HZ <= Q(21) and not DLY1;
+	SEC <= Q(21);
+	SAMPLE <= Q(14) and not DLY2;
+	D <= Q(15 downto 14);
+	ENB <= "0001" when D=0 else
+		   "0010" when D=1 else
+		   "0100" when D=2 else
+		   "1000" when D=3 else
+		   "0000";
+	MATCH <= '1' when D=SEL(1 downto 0) else '0';
+end block FREE_COUNTER;
+
+DEBOUNCING : block
+	signal D0,D1: std_logic;
+begin
+	process(clk)
+	begin
+		if clk'event and clk='1' then
+			if sample='1' then
+				D1 <= D0; D0 <= KEY;
+				FLT <= ((D0 and D1) or FLT) and (D0 or D1);
+			end if;
+		end if;
+	end process;
+end block DEBOUNCING;
+	
+differential : block
+	signal D0,D1: std_logic;
+begin 
+	process(CLk)
+	begin
+		if CLK'event and CLK='1' then
+			D1<=D0;D0<=FLT;
+		end if;
+	end process;
+	DIF<= D0 and not D1;
+end block differential;
+
+timer_control : block
+	signal SET,EC : STD_LOGIC;
+begin
+	process(CLK)
+	begin
+		if set='1' then
+			HOLD <= '1';
+		elsif CLK'event and CLK='1' then
+			if EC='1' then
+				HOLD <= not HOLD;
+			end if;
+		end if;
+	end process;
+	SET <= not YC(3);
+	EC <= not YC(2) and DIF;
+end block timer_control;
+
+DIGIT_SELECT : block
+	signal SET,EC : STD_LOGIC;
+	signal Q : std_logic_vector(2 downto 0 );
+begin
+	process(CLK)
+	begin
+		if set='1' then
+			Q <= "100";
+		elsif CLK'event and CLK='1' then
+			if ec='1' then
+				Q <= not Q-1;
+			end if;
+		end if;
+	end process;
+	SET <= '1' when Q = 7 else '0';
+	EC <= not YC(1) and DIF;
+	SEL <= Q;
+end block DIGIT_SELECT;
+	
+SEVEN_SEGMENT : block
+begin
+	SEG <= "0111111" when DB=0 else
+		   "0000110" when DB=1 else
+		   "1011011" when DB=2 else
+		   "1001111" when DB=3 else
+		   "1100110" when DB=4 else
+		   "1101101" when DB=5 else
+		   "1111101" when DB=6 else
+		   "0000111" when DB=7 else
+		   "1111111" when DB=8 else
+		   "1101111" when DB=9 else
+		   "1110111" when DB=10 else
+		   "1111100" when DB=11 else
+		   "0111001" when DB=12 else
+		   "1011110" when DB=13 else
+		   "1111001" when DB=14 else
+		   "1110001" when DB=15 else
+		   "0000000";
+end block SEVEN_SEGMENT;
+
+end CH11C_ARCH;
