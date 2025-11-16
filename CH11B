@@ -1,0 +1,96 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+entity CH11B is
+port( CLK:in std_logic;
+	XA:out std_logic_vector(3 downto 0);
+	XB:out std_logic_vector(7 downto 0);
+	YC:in std_logic_vector(3 downto 0));
+end CH11B;
+
+architecture CH11B_ARCH of CH11B is
+	component DIGIT10
+	port( CLK:in std_logic;
+		DB:out std_logic_vector(3 downto 0);
+		ENB:in std_logic;
+		CLR:in std_logic;
+		EC:in std_logic;
+		CY:out std_logic);
+	end component;
+	component DIGIT6
+	port( CLK:in std_logic;
+		DB:out std_logic_vector(3 downto 0);
+		ENB:in std_logic;
+		CLR:in std_logic;
+		EC:in std_logic;
+		CY:out std_logic);
+	end component;
+
+	signal DB:std_logic_vector(3 downto 0);
+	signal SEG:std_logic_vector(6 downto 0);
+	signal ENB:std_logic_vector(3 downto 0);
+	signal HZ,SEC,CLR: std_logic;
+	signal CY1,CY2,CY3,CY4:std_logic;
+begin
+
+SYSTEM_CONNECT: block
+begin
+	U1:DIGIT10 port map (CLK,DB,ENB(0),CLR,HZ,CY1);
+	U2:DIGIT6 port map (CLK,DB,ENB(1),CLR,CY1,CY2);
+	U3:DIGIT10 port map (CLK,DB,ENB(2),CLR,CY2,CY3);
+	U4:DIGIT6 port map (CLK,DB,ENB(3),CLR,CY3,CY4);
+	CLR <= not YC(0) or not YC(1) or not YC(2) or not YC(3);
+	XA <= not ENB;
+	XB(7) <= SEC and ENB(2);
+	XB(6 downto 0) <= SEG;
+end block SYSTEM_CONNECT;
+
+FREE_COUNTER : block
+	signal Q:std_logic_vector(21 downto 0);
+	signal D:std_logic_vector(1 downto 0);
+	signal DLY : std_logic;
+begin
+	process(CLK)
+	begin
+		if CLK'EVENT and CLK = '1' then
+			DLY <= Q(21);
+			Q <= Q+1;
+		end if;
+	end process;
+	HZ <= Q(21) and not DLY;
+	SEC <= Q(21);
+	D <= Q(15 downto 14);
+	ENB <= "0001" when D=0 else
+		   "0010" when D=1 else
+		   "0100" when D=2 else
+		   "1000" when D=3 else
+		   "0000";
+end block FREE_COUNTER;
+
+SEVEN_SEGMENT : block
+begin
+	SEG <= "0111111" when DB=0 else
+		   "0000110" when DB=1 else
+		   "1011011" when DB=2 else
+		   "1001111" when DB=3 else
+		   "1100110" when DB=4 else
+		   "1101101" when DB=5 else
+		   "1111101" when DB=6 else
+		   "0000111" when DB=7 else
+		   "1111111" when DB=8 else
+		   "1101111" when DB=9 else
+		   "1110111" when DB=10 else
+		   "1111100" when DB=11 else
+		   "0111001" when DB=12 else
+		   "1011110" when DB=13 else
+		   "1111001" when DB=14 else
+		   "1110001" when DB=15 else
+		   "0000000";
+end block SEVEN_SEGMENT;
+
+end CH11B_ARCH;

@@ -1,0 +1,38 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.std_logic_arith.all;
+use ieee.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+entity DIGIT10 is
+port( CLK:in std_logic;
+	DB:out std_logic_vector(3 downto 0);
+	ENB:in std_logic;
+	CLR:in std_logic;
+	EC:in std_logic;
+	CY:out std_logic);
+end DIGIT10;
+
+architecture DIGIT10_ARCH of DIGIT10 is
+	signal Q:std_logic_vector(3 downto 0);
+	signal RST,DLY:std_logic;
+begin
+	process(CLK,RST)
+	begin
+		if RST='1' then
+			Q <= "0000";
+		elsif CLK'event and CLK='1' then
+			DLY <= Q(3);
+			if EC='1' then
+				Q <= Q+1;
+			end if;
+		end if;
+	end process;
+	CY <= not Q(3) and DLY;
+	RST <= '1' when Q=10 or CLR='1' else
+		   '0';
+	DB <= Q when ENB='1' else
+		   "ZZZZ";
+end DIGIT10_ARCH;
