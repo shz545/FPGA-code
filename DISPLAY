@@ -11,7 +11,7 @@ port (
   CLK : in  STD_LOGIC;  --system clock
   REG : in  STD_LOGIC_VECTOR (15 downto 0); --digit data
   SEG : out STD_LOGIC_VECTOR (6 downto 0); --segment output
-  SEG : out STD_LOGIC_VECTOR (1 downto 0); --segment output
+  SEQ : out STD_LOGIC_VECTOR (1 downto 0); --segment output
   SAMPLE,BLINK : out STD_LOGIC
 );
 end DISPLAY;
