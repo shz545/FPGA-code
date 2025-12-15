@@ -1,0 +1,104 @@
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.std_logic_arith.all;
+use IEEE.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+-- *********************************************************
+-- CH15A : temperature control (test #A) - Measurement
+--                  designed by Pei-Chong Tang, Feb. 1999
+-- *********************************************************
+entity CH15A is
+    port
+    (
+        CLK : in  STD_LOGIC;                      -- 4MHz clock
+        XA  : out STD_LOGIC_VECTOR (3 downto 0);  -- LED scanning
+        XB  : out STD_LOGIC_VECTOR (7 downto 0);  -- LED segment
+        XC  : in  STD_LOGIC_VECTOR (3 downto 0);  -- keyboard input
+        YA  : out STD_LOGIC_VECTOR (3 downto 0);  -- PWM/Control output
+        YB  : in  STD_LOGIC_VECTOR (7 downto 0)   -- ADC input data
+    );
+end CH15A;
+
+architecture CH15A_ARCH of CH15A is
+    component MONITOR
+    port
+    (   CLK  : in    STD_LOGIC;
+        DB   : inout STD_LOGIC_VECTOR (7 downto 0);
+        A    : out   STD_LOGIC_VECTOR (3 downto 0);
+        RD   : out   STD_LOGIC;
+        SWR  : out   STD_LOGIC;
+        XA   : out   STD_LOGIC_VECTOR (3 downto 0);
+        XB   : out   STD_LOGIC_VECTOR (7 downto 0);
+        XC   : in    STD_LOGIC_VECTOR (3 downto 0);
+        FREQ : out   STD_LOGIC
+    );
+    end component;
+
+    component ADC
+    port
+    (   AOP  : out STD_LOGIC_VECTOR (7 downto 0);
+        AIN  : in  STD_LOGIC_VECTOR (7 downto 0);
+        STC  : out STD_LOGIC;
+        ENB  : out STD_LOGIC;
+        FREQ : in  STD_LOGIC;
+        CLK  : in  STD_LOGIC
+    );
+    end component;
+
+    signal DB      : STD_LOGIC_VECTOR (7 downto 0);
+    signal A       : STD_LOGIC_VECTOR (3 downto 0);
+    signal RD, SWR : STD_LOGIC;
+    signal AOP, AIN: STD_LOGIC_VECTOR (7 downto 0);
+    signal CSO, PWR: STD_LOGIC;
+
+begin
+    -- *****************************************************
+    -- system connection for the experiment
+    --
+    SYSTEM_CONNECT : block
+        signal DIN : STD_LOGIC_VECTOR (7 downto 0);
+        signal FREQ, STC, ENB : STD_LOGIC;
+    begin
+        U1: MONITOR port map (CLK, DB, A, RD, SWR, XA, XB, XC, FREQ);
+        U2: ADC     port map (AOP, AIN, STC, ENB, FREQ, CLK);
+
+        YA(0) <= PWR;  -- Heater Control
+        YA(1) <= '1';
+        YA(2) <= ENB;  -- ADC Read (RD/)
+        YA(3) <= STC;  -- ADC Start (WR/)
+        
+        AIN <= YB;     -- Data from ADC0804
+
+        -- Chip Select for Address 0
+        CSO <= not A(3) and not A(2) and not A(1) and not A(0);
+    end block SYSTEM_CONNECT;
+
+    -- *****************************************************
+    -- command register
+    --
+    COMMAND_REGISTER : block
+        signal T, EC : STD_LOGIC;
+    begin
+        process (CLK)
+        begin
+            if CLK'event and CLK='1' then
+                if EC = '1' then
+                    PWR <= DB(0); -- Latch Heater ON/OFF command
+                end if;
+            end if;
+        end process;
+
+        -- Output Temperature (AOP) to Data Bus when Reading
+        DB <= AOP when T='1' else "ZZZZZZZZ"; 
+        
+        EC <= SWR and CSO;
+        T  <= not RD and CSO;
+    end block COMMAND_REGISTER;
+
+    -- *****************************************************
+    -- end of architecture
+    --
+end CH15A_ARCH;
