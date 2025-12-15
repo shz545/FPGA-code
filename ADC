@@ -1,0 +1,71 @@
+-- The IEEE standard 1164 package, declares std_logic, rising_edge(), etc.
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.std_logic_arith.all;
+use IEEE.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+-- *********************************************************
+-- ADC : 8-BIT ADC input
+--                  designed by Pei-Chong Tang, Feb. 1999
+-- *********************************************************
+entity ADC is
+    port
+    (
+        AOP  : out STD_LOGIC_VECTOR (7 downto 0); -- ADC data output (to FPGA internal)
+        AIN  : in  STD_LOGIC_VECTOR (7 downto 0); -- ADC input (from ADC0804 DB)
+        STC  : out STD_LOGIC;                     -- start of conversion
+        ENB  : out STD_LOGIC;                     -- read enable (Active Low for ADC0804 RD)
+        FREQ : in  STD_LOGIC;                     -- sample point/clock
+        CLK  : in  STD_LOGIC                      -- system clock
+    );
+end ADC;
+
+architecture ADC_ARCH of ADC is
+    signal D0, D1, D2, D3 : STD_LOGIC;
+begin
+
+    -- *****************************************************
+    -- time sequence generator
+    -- 產生 ADC 控制所需的時序訊號
+    TIME_SEQUENCE : block
+    begin
+        process (CLK)
+        begin
+            if CLK'event and CLK='1' then
+                D3 <= D2; 
+                D2 <= D1; 
+                D1 <= D0; 
+                D0 <= FREQ;
+            end if;
+        end process;
+
+        -- 產生讀取訊號 (Active Low) 與 啟動訊號
+        ENB <= not (FREQ or D0 or D1); 
+        STC <= not D3;
+    end block TIME_SEQUENCE;
+
+    -- *****************************************************
+    -- 8-bit analog-to-digital input
+    -- 讀取並鎖存 ADC 數值
+    ADC_FETCH : block
+        signal EC : STD_LOGIC;
+    begin
+        process (CLK)
+        begin
+            if CLK'event and CLK='1' then
+                if EC = '1' then
+                    AOP <= AIN; -- Latch data
+                end if;
+            end if;
+        end process;
+        
+        EC <= D1; -- Enable signal derived from timing sequence
+    end block ADC_FETCH;
+
+    -- *****************************************************
+    -- end of architecture
+    --
+end ADC_ARCH;
