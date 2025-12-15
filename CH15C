@@ -1,0 +1,111 @@
+library IEEE;
+use IEEE.std_logic_1164.all;
+use IEEE.std_logic_arith.all;
+use IEEE.std_logic_unsigned.all;
+
+library SYNOPSYS;
+use SYNOPSYS.attributes.all;
+
+-- *********************************************************
+-- CH15C : temperature control (test #C) - Proportional Control
+--                  designed by Pei-Chong Tang, Feb. 1999
+-- *********************************************************
+entity CH15C is
+    port
+    (
+        CLK : in  STD_LOGIC;
+        XA  : out STD_LOGIC_VECTOR (3 downto 0);
+        XB  : out STD_LOGIC_VECTOR (7 downto 0);
+        XC  : in  STD_LOGIC_VECTOR (3 downto 0);
+        YA  : out STD_LOGIC_VECTOR (3 downto 0);
+        YB  : in  STD_LOGIC_VECTOR (7 downto 0)
+    );
+end CH15C;
+
+architecture CH15C_ARCH of CH15C is
+    -- Component declarations
+    component MONITOR
+    port ( CLK:in STD_LOGIC; DB:inout STD_LOGIC_VECTOR(7 downto 0); A:out STD_LOGIC_VECTOR(3 downto 0);
+           RD:out STD_LOGIC; SWR:out STD_LOGIC; XA:out STD_LOGIC_VECTOR(3 downto 0);
+           XB:out STD_LOGIC_VECTOR(7 downto 0); XC:in STD_LOGIC_VECTOR(3 downto 0); FREQ:out STD_LOGIC );
+    end component;
+    component ADC
+    port ( AOP:out STD_LOGIC_VECTOR(7 downto 0); AIN:in STD_LOGIC_VECTOR(7 downto 0);
+           STC:out STD_LOGIC; ENB:out STD_LOGIC; FREQ:in STD_LOGIC; CLK:in STD_LOGIC );
+    end component;
+
+    signal DB : STD_LOGIC_VECTOR (7 downto 0);
+    signal A  : STD_LOGIC_VECTOR (3 downto 0);
+    signal RD, SWR : STD_LOGIC;
+    signal AOP, AIN : STD_LOGIC_VECTOR (7 downto 0);
+    signal CMD, PWM : STD_LOGIC_VECTOR (7 downto 0);
+    signal CSO, PWR : STD_LOGIC;
+
+begin
+    -- *****************************************************
+    -- system connection
+    SYSTEM_CONNECT : block
+        signal FREQ, STC, ENB : STD_LOGIC;
+    begin
+        U1: MONITOR port map (CLK, DB, A, RD, SWR, XA, XB, XC, FREQ);
+        U2: ADC     port map (AOP, AIN, STC, ENB, FREQ, CLK);
+
+        YA(0) <= PWR;
+        YA(1) <= '1';
+        YA(2) <= ENB;
+        YA(3) <= STC;
+        AIN   <= YB;
+        CSO   <= not A(3) and not A(2) and not A(1) and not A(0);
+    end block SYSTEM_CONNECT;
+
+    -- *****************************************************
+    -- command register
+    COMMAND_REGISTER : block
+        signal T, EC : STD_LOGIC;
+    begin
+        process (CLK)
+        begin
+            if CLK'event and CLK='1' then
+                if EC='1' then
+                    CMD <= DB;
+                end if;
+            end if;
+        end process;
+
+        DB <= AOP when T='1' else "ZZZZZZZZ";
+        EC <= SWR and CSO;
+        T  <= not RD and CSO;
+    end block COMMAND_REGISTER;
+
+    -- *****************************************************
+    -- temperature control (Proportional)
+    -- 比例控制器：計算誤差值 DIF
+    TEMP_CONTROL : block
+        signal DIF : STD_LOGIC_VECTOR (7 downto 0);
+    begin
+        -- 若設定值 > 量測值，DIF = 差值；否則為 0
+        DIF <= (CMD - AOP) when CMD > AOP else "00000000";
+        
+        PWM <= DIF; -- 將誤差直接作為 PWM 的 Duty Cycle
+    end block TEMP_CONTROL;
+
+    -- *****************************************************
+    -- PWM generator
+    -- 產生 PWM 訊號驅動加熱器
+    PWM_GENERATOR : block
+        signal Q : STD_LOGIC_VECTOR (7 downto 0);
+    begin
+        process (CLK)
+        begin
+            if CLK'event and CLK='1' then
+                Q <= Q - 1; -- Free running down counter
+            end if;
+        end process;
+        
+        -- 當 PWM 設定值 (誤差) 大於計數器值時，輸出 High
+        PWR <= '1' when PWM > Q else '0';
+    end block PWM_GENERATOR;
+
+    -- *****************************************************
+    -- end of architecture
+end CH15C_ARCH;
