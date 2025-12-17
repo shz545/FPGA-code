@@ -1,0 +1,437 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.STD_LOGIC_ARITH.ALL;
+use IEEE.STD_LOGIC_UNSIGNED.ALL;
+
+entity Pong_Game is
+    Port (
+        CLK       : in  STD_LOGIC; -- 10MHz
+        RST_N     : in  STD_LOGIC; 
+        PS2_PAUSE : in  STD_LOGIC; 
+        SW1_P1    : in  STD_LOGIC; 
+        SW8_P2    : in  STD_LOGIC; 
+        ROW_OUT   : out STD_LOGIC_VECTOR(7 downto 0);
+        COL_R_OUT : out STD_LOGIC_VECTOR(7 downto 0);
+        COL_G_OUT : out STD_LOGIC_VECTOR(7 downto 0);
+        SEG7_OUT  : out STD_LOGIC_VECTOR(7 downto 0);
+        SCAN_OUT  : out STD_LOGIC_VECTOR(2 downto 0);
+        LED_OUT   : out STD_LOGIC_VECTOR(7 downto 0); 
+        LED_COM   : out STD_LOGIC; 
+        BUZZ_OUT  : out STD_LOGIC 
+    );
+end Pong_Game;
+
+architecture Behavioral of Pong_Game is
+
+    -- [參數設定]
+    constant GAME_SPEED_MAX : integer := 2000000; -- 球初始速度 (數值大=慢)
+    constant GAME_SPEED_MIN : integer := 500000;  -- 球最快速度
+    constant SPEED_STEP     : integer := 200000;  -- 球加速幅度
+
+    constant PADDLE_DELAY_START : integer := 80;  -- 球拍初始延遲 (數值大=慢)
+    constant PADDLE_DELAY_MIN   : integer := 30;  -- 球拍最快延遲
+    constant PADDLE_STEP        : integer := 10;  -- 球拍加速幅度
+
+    constant SCAN_SPEED_MAX : integer := 5000;    
+    constant BEEP_DURATION  : integer := 1000000; 
+    
+    -- [音頻常數]
+    constant NOTE_G3  : integer := 25510; 
+    constant NOTE_C4  : integer := 19113; 
+    constant NOTE_E4  : integer := 15169; 
+    constant NOTE_G4  : integer := 12755; 
+    constant NOTE_C5  : integer := 9555; 
+    constant NOTE_E5  : integer := 7584; 
+    constant NOTE_G5  : integer := 6378; 
+    constant NOTE_XXX : integer := 1;     
+    
+    constant SONG_LEN : integer := 13; 
+    type note_array is array (0 to 12) of integer;
+    constant SONG_NOTES : note_array := (
+        NOTE_E5, NOTE_E5, NOTE_XXX, NOTE_E5, 
+        NOTE_XXX, NOTE_C5, NOTE_E5, NOTE_XXX,
+        NOTE_G5, NOTE_XXX, NOTE_XXX, NOTE_XXX,
+        NOTE_G4
+    );
+    
+    type rhythm_array is array (0 to 12) of integer;
+    constant SONG_RHYTHM : rhythm_array := (
+        1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 4 
+    );
+
+    -- 訊號宣告
+    signal cnt_game : integer range 0 to GAME_SPEED_MAX := 0;
+    signal current_speed : integer range 0 to GAME_SPEED_MAX := GAME_SPEED_MAX;
+    
+    -- [新增] 球拍當前速度延遲設定值
+    signal current_paddle_delay : integer range 0 to 100 := PADDLE_DELAY_START;
+
+    signal cnt_scan : integer range 0 to SCAN_SPEED_MAX := 0;
+    signal tick_game: std_logic := '0';
+    signal tick_scan: std_logic := '0';
+
+    signal paused       : std_logic := '0';
+    signal ps2_deb      : std_logic := '1'; 
+    signal ps2_last     : std_logic := '1'; 
+
+    signal ball_x : integer range 0 to 7 := 3;
+    signal ball_y : integer range 0 to 7 := 4;
+    signal dir_x  : std_logic := '1'; 
+    signal dir_y  : std_logic := '1'; 
+    
+    signal p1_y   : integer range 0 to 5 := 2; 
+    signal p2_y   : integer range 0 to 5 := 2; 
+
+    type state_t is (WAIT_START, PLAYING, ROUND_END, GAME_WIN);
+    signal state : state_t := WAIT_START;
+    
+    signal score_p1 : integer range 0 to 10 := 0; 
+    signal score_p2 : integer range 0 to 10 := 0; 
+    signal last_winner : std_logic := '0'; 
+
+    signal row_idx  : integer range 0 to 7 := 0;
+    signal scan_sel : std_logic := '0'; 
+    
+    -- 巢狀計數器範圍需要涵蓋 paddle_delay_start (80)
+    signal cnt_paddle_tmr : integer range 0 to 100 := 0; 
+    signal cnt_blink_tmr  : integer range 0 to 12 := 0; 
+    
+    signal led_buffer : std_logic_vector(7 downto 0) := "00000000"; 
+    signal blink_flag : std_logic := '0';
+
+    signal sound_mode   : std_logic_vector(1 downto 0) := "00"; 
+    signal tone_target  : integer range 0 to 30000 := 0;
+    signal tone_cnt     : integer range 0 to 30000 := 0;
+    signal buzz_wave    : std_logic := '0';
+    
+    signal note_idx     : integer range 0 to SONG_LEN := 0;
+    signal note_timer   : integer range 0 to 2000 := 0; 
+    constant BASE_BEAT  : integer := 300; 
+
+    function decode_7seg(num : integer) return std_logic_vector is
+    begin
+        case num is
+            when 0 => return "11111100"; when 1 => return "01100000";
+            when 2 => return "11011010"; when 3 => return "11110010";
+            when 4 => return "01100110"; when 5 => return "10110110";
+            when 6 => return "10111110"; when 7 => return "11100000";
+            when 8 => return "11111110"; when 9 => return "11110110";
+            when others => return "00000000";
+        end case;
+    end decode_7seg;
+
+begin
+
+    LED_COM <= '0'; 
+    LED_OUT <= led_buffer;
+
+    -- ==========================================
+    -- 1. 主控制流程 (時脈、輸入與顯示)
+    -- ==========================================
+    process(CLK, RST_N)
+        variable current_note_limit : integer range 0 to 2000;
+    begin
+        if RST_N = '0' then
+            cnt_game <= 0;
+            cnt_scan <= 0;
+            tone_cnt <= 0;
+            tone_target <= 0;
+            BUZZ_OUT <= '1'; 
+            note_idx <= 0;
+            note_timer <= 0;
+            cnt_paddle_tmr <= 0;
+            cnt_blink_tmr <= 0;
+            blink_flag <= '0';
+            led_buffer <= "00000000";
+        elsif rising_edge(CLK) then
+            
+            -- [1. 主頻率產生]
+            if cnt_game >= current_speed then
+                cnt_game <= 0; tick_game <= '1';
+            else
+                cnt_game <= cnt_game + 1; tick_game <= '0';
+            end if;
+
+            -- 掃描頻率 (約 2kHz, 0.5ms)
+            if cnt_scan >= SCAN_SPEED_MAX then
+                cnt_scan <= 0; tick_scan <= '1';
+            else
+                cnt_scan <= cnt_scan + 1; tick_scan <= '0';
+            end if;
+
+            -- [2. 低速邏輯 (使用 tick_scan 降頻處理)]
+            if tick_scan = '1' then
+                
+                -- A. 球拍與閃爍控制
+                -- [修改]: 這裡的比較值改成變數 current_paddle_delay，實現球拍變速
+                if cnt_paddle_tmr >= current_paddle_delay then 
+                    cnt_paddle_tmr <= 0;
+                    
+                    -- 球拍控制邏輯
+                    if state = WAIT_START or state = PLAYING then
+                        if SW1_P1 = '0' and p1_y < 5 then p1_y <= p1_y + 1;
+                        elsif SW1_P1 = '1' and p1_y > 0 then p1_y <= p1_y - 1; end if;
+                        if SW8_P2 = '0' and p2_y < 5 then p2_y <= p2_y + 1;
+                        elsif SW8_P2 = '1' and p2_y > 0 then p2_y <= p2_y - 1; end if;
+                    end if;
+
+                    -- 閃爍計數 (基於球拍計數器的溢位)
+                    if cnt_blink_tmr >= 12 then 
+                        cnt_blink_tmr <= 0;
+                        blink_flag <= not blink_flag;
+                    else
+                        cnt_blink_tmr <= cnt_blink_tmr + 1;
+                    end if;
+                else
+                    cnt_paddle_tmr <= cnt_paddle_tmr + 1;
+                end if;
+
+                -- B. 音樂節拍計數
+                if sound_mode /= "10" then
+                    note_idx <= 0;
+                    note_timer <= 0;
+                elsif paused = '0' then
+                    if SONG_RHYTHM(note_idx) = 1 then current_note_limit := BASE_BEAT;
+                    elsif SONG_RHYTHM(note_idx) = 2 then current_note_limit := BASE_BEAT * 2;
+                    else current_note_limit := BASE_BEAT * 4;
+                    end if;
+
+                    if note_timer >= current_note_limit then
+                        note_timer <= 0;
+                        if note_idx < (SONG_LEN - 1) then note_idx <= note_idx + 1;
+                        else note_idx <= 0; end if;
+                    else
+                        note_timer <= note_timer + 1;
+                    end if;
+                end if;
+
+                -- C. LED 輸出邏輯更新
+                if state = PLAYING then
+                    led_buffer(7 downto 4) <= conv_std_logic_vector(score_p1, 4);
+                    led_buffer(3 downto 0) <= conv_std_logic_vector(score_p2, 4);
+                else
+                    if blink_flag = '1' then led_buffer <= "10101010";
+                    else led_buffer <= "01010101"; end if;
+                end if;
+            end if;
+
+            -- [3. 高速音頻產生]
+            if sound_mode = "00" or paused = '1' then
+                BUZZ_OUT <= '1'; 
+                tone_cnt <= 0;
+            else
+                if tone_cnt >= tone_target then
+                    tone_cnt <= 0;
+                    buzz_wave <= not buzz_wave;
+                else
+                    tone_cnt <= tone_cnt + 1;
+                end if;
+
+                if sound_mode = "01" then 
+                    if tone_cnt < (tone_target / 32) then BUZZ_OUT <= '0'; 
+                    else BUZZ_OUT <= '1'; end if;
+                elsif sound_mode = "10" then
+                    if tone_target = NOTE_XXX then 
+                        BUZZ_OUT <= '1'; 
+                    else 
+                        if buzz_wave = '1' and tone_cnt < (tone_target / 8) then
+                            BUZZ_OUT <= '0';
+                        else
+                            BUZZ_OUT <= '1';
+                        end if;
+                    end if;
+                end if;
+            end if;
+
+            if sound_mode = "10" then
+                tone_target <= SONG_NOTES(note_idx);
+            elsif sound_mode = "01" then
+                tone_target <= 5000; 
+            end if;
+            
+        end if;
+    end process;
+
+    -- ==========================================
+    -- 2. 遊戲主邏輯 (物理與狀態機)
+    -- ==========================================
+    process(CLK, RST_N)
+        variable beep_delay : integer range 0 to BEEP_DURATION := 0;
+    begin
+        if RST_N = '0' then
+            state <= WAIT_START;
+            ball_x <= 3; ball_y <= 4;
+            dir_x <= '1'; dir_y <= '0';
+            score_p1 <= 0; score_p2 <= 0;
+            sound_mode <= "00";
+            beep_delay := 0;
+            last_winner <= '0'; 
+            paused <= '0';
+            current_speed <= GAME_SPEED_MAX; 
+            current_paddle_delay <= PADDLE_DELAY_START; -- 重置球拍速度
+        elsif rising_edge(CLK) then
+            
+            ps2_deb <= PS2_PAUSE;
+            if ps2_deb = '0' and ps2_last = '1' then
+                paused <= not paused; 
+            end if;
+            ps2_last <= ps2_deb;
+
+            if paused = '0' then
+                if beep_delay > 0 then
+                    beep_delay := beep_delay - 1;
+                    if beep_delay = 0 and state /= GAME_WIN then
+                        sound_mode <= "00"; 
+                    end if;
+                end if;
+
+                if tick_game = '1' then
+                    case state is
+                        when WAIT_START =>
+                            current_speed <= GAME_SPEED_MAX;
+                            current_paddle_delay <= PADDLE_DELAY_START; -- 每局重置球拍速度
+                            
+                            if last_winner = '0' then ball_x <= 1; dir_x <= '1'; 
+                            else ball_x <= 6; dir_x <= '0'; end if;
+                            ball_y <= 4; 
+                            
+                            if SW1_P1='0' or SW8_P2='0' then state <= PLAYING; end if;
+
+                        when PLAYING =>
+                            
+                            -- 球的移動邏輯
+                            if dir_y = '1' then 
+                                if ball_y = 7 then dir_y <= '0'; ball_y <= 6;
+                                else ball_y <= ball_y + 1; end if;
+                            else 
+                                if ball_y = 0 then dir_y <= '1'; ball_y <= 1;
+                                else ball_y <= ball_y - 1; end if;
+                            end if;
+
+                            if dir_x = '1' then 
+                                if ball_x = 6 then 
+                                    if (ball_y >= p2_y) and (ball_y <= p2_y + 2) then
+                                        dir_x <= '0'; ball_x <= 5; 
+                                        sound_mode <= "01"; beep_delay := BEEP_DURATION/5;
+                                        
+                                        -- [同步加速邏輯]
+                                        if current_speed > GAME_SPEED_MIN then
+                                            current_speed <= current_speed - SPEED_STEP;
+                                            -- 讓球拍也跟著變快 (數值變小=速度變快)
+                                            if current_paddle_delay > PADDLE_DELAY_MIN then
+                                                current_paddle_delay <= current_paddle_delay - PADDLE_STEP;
+                                            end if;
+                                        end if;
+                                    else
+                                        ball_x <= 7; last_winner <= '0'; 
+                                        if score_p1 = 9 then 
+                                            score_p1 <= 10; 
+                                            state <= GAME_WIN; 
+                                            sound_mode <= "10"; 
+                                        else 
+                                            score_p1 <= score_p1 + 1; 
+                                            state <= ROUND_END; 
+                                            sound_mode <= "01"; beep_delay := BEEP_DURATION; 
+                                        end if;
+                                    end if;
+                                else ball_x <= ball_x + 1; end if;
+                            else 
+                                if ball_x = 1 then 
+                                    if (ball_y >= p1_y) and (ball_y <= p1_y + 2) then
+                                        dir_x <= '1'; ball_x <= 2; 
+                                        sound_mode <= "01"; beep_delay := BEEP_DURATION/5;
+                                        
+                                        -- [同步加速邏輯]
+                                        if current_speed > GAME_SPEED_MIN then
+                                            current_speed <= current_speed - SPEED_STEP;
+                                            -- 讓球拍也跟著變快
+                                            if current_paddle_delay > PADDLE_DELAY_MIN then
+                                                current_paddle_delay <= current_paddle_delay - PADDLE_STEP;
+                                            end if;
+                                        end if;
+                                    else
+                                        ball_x <= 0; last_winner <= '1'; 
+                                        if score_p2 = 9 then 
+                                            score_p2 <= 10; 
+                                            state <= GAME_WIN; 
+                                            sound_mode <= "10"; 
+                                        else 
+                                            score_p2 <= score_p2 + 1; 
+                                            state <= ROUND_END; 
+                                            sound_mode <= "01"; beep_delay := BEEP_DURATION; 
+                                        end if;
+                                    end if;
+                                else ball_x <= ball_x - 1; end if;
+                            end if;
+
+                        when ROUND_END =>
+                            state <= WAIT_START;
+
+                        when GAME_WIN =>
+                            sound_mode <= "10"; 
+                            if SW1_P1 = '0' and SW8_P2 = '0' then 
+                                score_p1 <= 0; score_p2 <= 0; 
+                                sound_mode <= "00"; 
+                                state <= WAIT_START;
+                            end if;
+                    end case;
+                end if; 
+            end if; 
+        end if;
+    end process;
+
+    -- ==========================================
+    -- 3. 顯示輸出 (保持不變)
+    -- ==========================================
+    process(CLK)
+        variable col_red_temp : std_logic_vector(7 downto 0);
+        variable col_grn_temp : std_logic_vector(7 downto 0);
+    begin
+        if rising_edge(CLK) then
+            if tick_scan = '1' then
+                if row_idx = 7 then row_idx <= 0; else row_idx <= row_idx + 1; end if;
+                
+                scan_sel <= not scan_sel;
+                if scan_sel = '0' then
+                    SCAN_OUT <= "000"; 
+                    if score_p1 = 10 then SEG7_OUT <= "10011110"; 
+                    else SEG7_OUT <= decode_7seg(score_p1); end if;
+                else
+                    SCAN_OUT <= "101"; 
+                    if score_p2 = 10 then SEG7_OUT <= "10011110";
+                    else SEG7_OUT <= decode_7seg(score_p2); end if;
+                end if;
+
+                col_red_temp := "11111111"; 
+                col_grn_temp := "00000000";
+
+                if row_idx = ball_y then
+                    if state = PLAYING or state = WAIT_START then
+                        col_grn_temp(ball_x) := '1'; 
+                        col_red_temp(ball_x) := '0'; 
+                    end if;
+                end if;
+
+                if (row_idx >= p1_y) and (row_idx <= p1_y + 2) then 
+                    col_grn_temp(0) := '1'; 
+                end if;
+
+                if (row_idx >= p2_y) and (row_idx <= p2_y + 2) then 
+                    col_grn_temp(7) := '1'; 
+                end if;
+
+                COL_R_OUT <= col_red_temp;
+                COL_G_OUT <= col_grn_temp;
+
+                case row_idx is
+                    when 0 => ROW_OUT <= "00000001"; when 1 => ROW_OUT <= "00000010";
+                    when 2 => ROW_OUT <= "00000100"; when 3 => ROW_OUT <= "00001000";
+                    when 4 => ROW_OUT <= "00010000"; when 5 => ROW_OUT <= "00100000";
+                    when 6 => ROW_OUT <= "01000000"; when 7 => ROW_OUT <= "10000000";
+                    when others => ROW_OUT <= "00000000";
+                end case;
+            end if;
+        end if;
+    end process;
+
+end Behavioral;
